@@ -1,0 +1,21 @@
+DELIMITER $$
+
+CREATE TRIGGER trg_long_stay
+AFTER UPDATE ON BedAllocation
+FOR EACH ROW
+BEGIN
+    IF NEW.days_stayed IS NOT NULL AND NEW.days_stayed > 14 THEN
+        INSERT INTO AlertLog (patient_id, ward_id, days_stayed, alert_message)
+        VALUES (
+            NEW.patient_id,
+            NEW.ward_id,
+            NEW.days_stayed,
+            CONCAT('Patient ', NEW.patient_id,
+                   ' has stayed ', NEW.days_stayed,
+                   ' days in ward ', NEW.ward_id,
+                   '. Review required.')
+        );
+    END IF;
+END$$
+
+DELIMITER ;
