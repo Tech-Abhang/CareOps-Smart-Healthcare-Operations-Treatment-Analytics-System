@@ -1,0 +1,38 @@
+:root {
+  --bg: #f4f9fc;
+  --surface: #ffffff;
+  --line: #d6e4ee;
+  --text: #183247;
+  --text-soft: #546c7d;
+  --heading: #10293b;
+  --accent: #0c8fb1;
+
+  font-family: "Geist", "IBM Plex Sans", sans-serif;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.4;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.material-symbols-outlined {
+  font-variation-settings: "FILL" 0, "wght" 450, "GRAD" 0, "opsz" 24;
+  font-size: 20px;
+  line-height: 1;
+}
