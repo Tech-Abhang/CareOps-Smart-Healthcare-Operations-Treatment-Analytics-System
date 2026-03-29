@@ -45,4 +45,6 @@ logs/
 # Large generated CSV/JSON exports
 data/raw/
 data/processed/
-*.csv
+# Node modules
+node_modules/
+**/node_modules/
