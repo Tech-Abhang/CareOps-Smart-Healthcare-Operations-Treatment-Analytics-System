@@ -18,14 +18,20 @@ if errorlevel 1 (
 
 if not exist "%ROOT%\node_modules" (
   echo Installing frontend dependencies...
-  call npm.cmd install --prefix "%ROOT%"
-  if errorlevel 1 goto :fail
+  pushd "%ROOT%"
+  call npm.cmd install
+  set "NPM_EXIT_CODE=%ERRORLEVEL%"
+  popd
+  if not "%NPM_EXIT_CODE%"=="0" goto :fail
 )
 
 if not exist "%ROOT%\server\node_modules" (
   echo Installing backend dependencies...
-  call npm.cmd install --prefix "%ROOT%\server"
-  if errorlevel 1 goto :fail
+  pushd "%ROOT%\server"
+  call npm.cmd install
+  set "NPM_EXIT_CODE=%ERRORLEVEL%"
+  popd
+  if not "%NPM_EXIT_CODE%"=="0" goto :fail
 )
 
 :prompt_password
