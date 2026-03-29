@@ -3,6 +3,8 @@ $ErrorActionPreference = "Stop"
 
 $script:MySqlExe = $null
 $script:PythonExe = $null
+$global:CareOpsAuthFailure = $false
+$global:CareOpsConnectionFailure = $false
 
 function Import-EnvFile {
     param(
@@ -30,6 +32,87 @@ function Import-EnvFile {
             [System.Environment]::SetEnvironmentVariable($key, $value, "Process")
         }
     }
+}
+
+function Test-MySqlConnectivity {
+    $global:CareOpsAuthFailure = $false
+    $global:CareOpsConnectionFailure = $false
+
+    $mySqlArgs = Get-MySqlArgs
+    $mySqlArgs += "--execute"
+    $mySqlArgs += "SELECT 1;"
+
+    $output = & {
+        $ErrorActionPreference = "Continue"
+        & $script:MySqlExe @mySqlArgs 2>&1
+    }
+    $exitCode = $LASTEXITCODE
+    $outputText = ($output | Out-String).Trim()
+
+    if ($exitCode -eq 0) {
+        return $true
+    }
+
+    if ($outputText -like "*ERROR 1045*") {
+        $global:CareOpsAuthFailure = $true
+    }
+    elseif ($outputText -like "*ERROR 2003*" -or $outputText -like "*Can't connect to MySQL server*") {
+        $global:CareOpsConnectionFailure = $true
+    }
+
+    return $false
+}
+
+function Ensure-MySqlServiceRunning {
+    $preferredOrder = @("MySQL80", "MySQL", "MySQL57", "MariaDB")
+
+    try {
+        $services = @(Get-Service | Where-Object {
+            $_.Name -match "mysql|mariadb" -or $_.DisplayName -match "MySQL|MariaDB"
+        })
+    }
+    catch {
+        Write-Host "Could not query Windows services to auto-start MySQL: $($_.Exception.Message)" -ForegroundColor Yellow
+        return $false
+    }
+
+    if (-not $services -or $services.Count -eq 0) {
+        Write-Host "No MySQL service found for auto-start. Start your database server manually." -ForegroundColor Yellow
+        return $false
+    }
+
+    foreach ($service in $services) {
+        if ($service.Status -eq "Running") {
+            Write-Host "MySQL service '$($service.Name)' is already running." -ForegroundColor Gray
+            return $true
+        }
+    }
+
+    $ordered = @()
+    foreach ($name in $preferredOrder) {
+        $matched = $services | Where-Object { $_.Name -eq $name }
+        if ($matched) { $ordered += $matched }
+    }
+    $ordered += $services | Where-Object { $preferredOrder -notcontains $_.Name }
+
+    foreach ($service in $ordered) {
+        Write-Host "Attempting to start MySQL service '$($service.Name)'..." -ForegroundColor Yellow
+        try {
+            Start-Service -Name $service.Name -ErrorAction Stop
+            $controller = Get-Service -Name $service.Name -ErrorAction Stop
+            $controller.WaitForStatus("Running", [System.TimeSpan]::FromSeconds(15))
+            $controller.Refresh()
+            if ($controller.Status -eq "Running") {
+                Write-Host "Started service '$($service.Name)' successfully." -ForegroundColor Green
+                return $true
+            }
+        }
+        catch {
+            Write-Host "Could not start '$($service.Name)': $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+
+    return $false
 }
 
 function Invoke-Step {
@@ -133,6 +216,7 @@ function Invoke-MySqlCommand {
 
     if ($exitCode -ne 0) {
         if ($outputText -like "*ERROR 1045*") { $global:CareOpsAuthFailure = $true }
+        if ($outputText -like "*ERROR 2003*" -or $outputText -like "*Can't connect to MySQL server*") { $global:CareOpsConnectionFailure = $true }
         throw "mysql command failed (exit $exitCode). SQL: $Sql"
     }
 }
@@ -164,19 +248,38 @@ function Invoke-MySqlFile {
 
     if ($exitCode -ne 0) {
         if ($outputText -like "*ERROR 1045*") { $global:CareOpsAuthFailure = $true }
+        if ($outputText -like "*ERROR 2003*" -or $outputText -like "*Can't connect to MySQL server*") { $global:CareOpsConnectionFailure = $true }
         throw "mysql failed for SQL file '$SqlFile' (exit $exitCode)."
     }
 }
 
-Import-EnvFile
+Set-Location -LiteralPath $PSScriptRoot
+Import-EnvFile -Path (Join-Path $PSScriptRoot ".env")
 $script:MySqlExe = Resolve-MySqlExe
 $script:PythonExe = Resolve-PythonExe
 $oltpDb = if ($env:CAREOPS_OLTP_DB) { $env:CAREOPS_OLTP_DB } else { "careops_oltp" }
 $dwDb = if ($env:CAREOPS_DW_DB) { $env:CAREOPS_DW_DB } else { "careops_dw" }
 
-$global:CareOpsAuthFailure = $false
-
 try {
+    Invoke-Step -Title "Check MySQL connectivity" -Action {
+        if (-not (Test-MySqlConnectivity)) {
+            if (-not $global:CareOpsAuthFailure) {
+                Write-Host "Initial MySQL connectivity check failed. Trying to auto-start MySQL service..." -ForegroundColor Yellow
+                $started = Ensure-MySqlServiceRunning
+                if ($started) {
+                    Write-Host "Retrying MySQL connectivity after service start..." -ForegroundColor Gray
+                    if (Test-MySqlConnectivity) {
+                        return
+                    }
+                }
+                if (-not $global:CareOpsAuthFailure) {
+                    $global:CareOpsConnectionFailure = $true
+                }
+            }
+            throw "Cannot connect to MySQL. Ensure the MySQL service is running and host/port are correct."
+        }
+    }
+
     Invoke-Step -Title "Reset schemas" -Action {
         Invoke-MySqlCommand -Sql "DROP DATABASE IF EXISTS $dwDb; DROP DATABASE IF EXISTS $oltpDb;"
     }
@@ -211,6 +314,12 @@ catch {
     if ($global:CareOpsAuthFailure) {
         Write-Host "`n[AUTH ERROR] MySQL Access Denied. Check your password." -ForegroundColor Red
         exit 2
+    }
+    if ($global:CareOpsConnectionFailure) {
+        $dbHost = if ($env:CAREOPS_DB_HOST) { $env:CAREOPS_DB_HOST } else { "127.0.0.1" }
+        $dbPort = if ($env:CAREOPS_DB_PORT) { $env:CAREOPS_DB_PORT } else { "3306" }
+        Write-Host "`n[CONNECT ERROR] Cannot reach MySQL at ${dbHost}:${dbPort}. Start MySQL service (for example service name 'MySQL80') and retry." -ForegroundColor Red
+        exit 1
     }
     Write-Host "`n[ERROR] $($_.Exception.Message)" -ForegroundColor Red
     exit 1
